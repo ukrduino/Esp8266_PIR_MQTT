@@ -69,15 +69,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
 	Serial.println();
 	String topic_str = String(topic);
 	if (topic_str == "WittyCloud2/MotionSensor") {
-		// Switch on the LED if an 1 was received as first character
 		if ((char)payload[0] == '1') {
 			sensorEnabled = true;
-			//      digitalWrite(BLUE_LED, HIGH);   // Turn the LED on
 		}
 		if ((char)payload[0] == '0') {
 			sensorEnabled = false;
-			//      digitalWrite(BLUE_LED, LOW);  // Turn the LED off
 		}
+		motionDetected = false;
 	}
 }
 
@@ -111,7 +109,7 @@ void loop() {
 	askSensor();
 	showSensorStatus();
 	sendSensorStatus();
-	sendLightSensorData();
+	//sendLightSensorData();
 }
 
 void sendLightSensorData() {
@@ -133,11 +131,9 @@ void askSensor() {
 		if (pirState == LOW) {
 			Serial.println("Motion detected!");
 			// We only want to print on the output change, not state
-			if (sensorEnabled) {
-				if (!motionDetected) {
-					motionDetected = true;
-					return;
-				}
+			if (!motionDetected) {
+				motionDetected = true;
+				return;
 			}
 			pirState = HIGH;
 		}
@@ -149,6 +145,7 @@ void askSensor() {
 			Serial.println("Motion ended!");
 			// We only want to print on the output change, not state
 			pirState = LOW;
+			motionDetected = false;
 		}
 	}
 }
@@ -174,14 +171,26 @@ void showSensorStatus() {
 void sendSensorStatus() {
 	long now = millis();
 	if (now - lastSensorMsg > 1000) {
+		lastSensorMsg = now;
 		if (sensorEnabled && motionDetected) {
-			client.publish("WittyCloud2/status", "1");
+			client.publish("WittyCloud2/status", "4");
+			Serial.println("Publish status 4");
+			return;
 		}
 		else if (sensorEnabled && !motionDetected) {
 			client.publish("WittyCloud2/status", "2");
+			Serial.println("Publish status 2");
+			return;
 		}
-		else if (!sensorEnabled) {
+		else if (!sensorEnabled && motionDetected) {
 			client.publish("WittyCloud2/status", "3");
+			Serial.println("Publish status 3");
+			return;
+		}
+		else if (!sensorEnabled && !motionDetected) {
+			client.publish("WittyCloud2/status", "1");
+			Serial.println("Publish status 1");
+			return;
 		}
 	}
 }
