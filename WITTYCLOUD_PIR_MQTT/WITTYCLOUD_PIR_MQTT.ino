@@ -15,14 +15,16 @@ const int BOARD_LED = 2;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
+long lastSensorRead = 0;
 long lastSensorMsg = 0;
 long lastLightMsg = 0;
 char msg[50];
-int LDRValue = 0;
+int LDRLevel = 0;
 bool motionDetected = false; //0 - OK , 1 - Alarm
 bool sensorEnabled = false;
 byte pirState = LOW;             // we start, assuming no motion detected
 byte val = LOW;                  // variable for reading the pin status
+int sensorStatus = 0;
 
 void setup() {
 	pinMode(GREEN_LED, OUTPUT);
@@ -107,19 +109,23 @@ void loop() {
 	}
 	client.loop();
 	askSensor();
+	processSensorStatus();
 	showSensorStatus();
-	sendSensorStatus();
-	//sendLightSensorData();
+	sendLightSensorData();
 }
 
 void sendLightSensorData() {
 	long now = millis();
 	if (now - lastLightMsg > 2000) {
 		lastLightMsg = now;
-		LDRValue = analogRead(LDR_PIN); // read the value from the sensor
-		Serial.print("Publish message light: ");
-		Serial.println(LDRValue);
-		client.publish("WittyCloud2/light", String(LDRValue).c_str());
+		int sensorRead = analogRead(0); // read the value from the sensor
+		if (LDRLevel != sensorRead)
+		{
+			LDRLevel = sensorRead;
+			Serial.print("Publish message light: ");
+			Serial.println(LDRLevel);
+			client.publish("WittyCloud2/light", String(LDRLevel).c_str());
+		}
 	}
 }
 
@@ -151,47 +157,65 @@ void askSensor() {
 }
 
 void showSensorStatus() {
-	if (sensorEnabled && motionDetected) {
+	if (sensorStatus == 4) { //sensorEnabled && motionDetected
 		digitalWrite(GREEN_LED, LOW);
 		digitalWrite(RED_LED, LOW);
 		digitalWrite(BLUE_LED, HIGH);
+		return;
 	}
-	else if (sensorEnabled && !motionDetected) {
+	if (sensorStatus == 2) {
 		digitalWrite(GREEN_LED, LOW);
 		digitalWrite(RED_LED, HIGH);
 		digitalWrite(BLUE_LED, LOW);
+		return;
 	}
-	else if (!sensorEnabled) {
+	if (!sensorEnabled) {
 		digitalWrite(GREEN_LED, HIGH);
 		digitalWrite(RED_LED, LOW);
 		digitalWrite(BLUE_LED, LOW);
+		return;
 	}
 }
 
-void sendSensorStatus() {
+void processSensorStatus() {
 	long now = millis();
-	if (now - lastSensorMsg > 1000) {
-		lastSensorMsg = now;
+	if (now - lastSensorRead > 1000) {
+		lastSensorRead = now;
 		if (sensorEnabled && motionDetected) {
-			client.publish("WittyCloud2/status", "4");
-			Serial.println("Publish status 4");
+			publishSensorStatus(4);
 			return;
 		}
-		else if (sensorEnabled && !motionDetected) {
-			client.publish("WittyCloud2/status", "2");
-			Serial.println("Publish status 2");
+		if (sensorEnabled && !motionDetected) {
+			publishSensorStatus(2);
 			return;
 		}
-		else if (!sensorEnabled && motionDetected) {
-			client.publish("WittyCloud2/status", "3");
-			Serial.println("Publish status 3");
+		if (!sensorEnabled && motionDetected) {
+			publishSensorStatus(3);
 			return;
 		}
-		else if (!sensorEnabled && !motionDetected) {
-			client.publish("WittyCloud2/status", "1");
-			Serial.println("Publish status 1");
+		if (!sensorEnabled && !motionDetected) {
+			publishSensorStatus(1);
 			return;
 		}
 	}
 }
 
+void publishSensorStatus(int status) {
+		//sensorStatus = status;
+		//char array[1];
+		//array[0] = char(status);
+	if (sensorStatus != status) {//publishes status if it is changed
+		sensorStatus = status;
+		client.publish("WittyCloud2/status", String(status).c_str());
+		Serial.print("Publish status ");
+		Serial.print(status);
+	}
+	else
+	{
+		long now = millis();
+		if (now - lastSensorMsg > 300000) { //publishes status every 5 min even if it is not changed
+			lastSensorMsg = now;
+			client.publish("WittyCloud2/status", String(status).c_str());
+		}
+	}
+}
