@@ -22,9 +22,11 @@ char msg[50];
 int LDRLevel = 0;
 bool motionDetected = false; //0 - OK , 1 - Alarm
 bool sensorEnabled = false;
+bool ledsEnabled = true;
 byte pirState = LOW;             // we start, assuming no motion detected
 byte val = LOW;                  // variable for reading the pin status
 int sensorStatus = 0;
+int sensorStatusPeriod = 60000;
 
 void setup() {
 	pinMode(GREEN_LED, OUTPUT);
@@ -70,7 +72,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 	}
 	Serial.println();
 	String topic_str = String(topic);
-	if (topic_str == "WittyCloud2/MotionSensor") {
+	if (strcmp(topic, "WittyCloud2/motionSensor") == 0 ) {
 		if ((char)payload[0] == '1') {
 			sensorEnabled = true;
 		}
@@ -78,6 +80,23 @@ void callback(char* topic, byte* payload, unsigned int length) {
 			sensorEnabled = false;
 		}
 		motionDetected = false;
+		return;
+	}
+	if (strcmp(topic, "WittyCloud2/leds") == 0) {
+		if ((char)payload[0] == '1') {
+			ledsEnabled = true;
+		}
+		if ((char)payload[0] == '0') {
+			ledsEnabled = false;
+		}
+		return;
+	}
+	if (strcmp(topic, "WittyCloud2/setSensorStatusPeriod") == 0) {
+		String myString = String((char*)payload);
+		sensorStatusPeriod = myString.toInt();
+		Serial.println(sensorStatusPeriod);
+		client.publish("WittyCloud2/status", "SensorStatusPeriod set to " + sensorStatusPeriod);
+		return;
 	}
 }
 
@@ -91,7 +110,9 @@ void reconnect() {
 			// Once connected, publish an announcement...
 			client.publish("WittyCloud2/status", "WittyCloud2 connected");
 			// ... and resubscribe
-			client.subscribe("WittyCloud2/MotionSensor");
+			client.subscribe("WittyCloud2/motionSensor");
+			client.subscribe("WittyCloud2/leds");
+			client.subscribe("WittyCloud2/setSensorStatusPeriod");
 		}
 		else {
 			Serial.print("failed, rc=");
@@ -133,7 +154,10 @@ void sendLightSensorData() {
 void askSensor() {
 	val = digitalRead(SENSOR_PIN);
 	if (val == HIGH) {            // check if the input is HIGH
-		digitalWrite(BOARD_LED, LOW); // turn LED ON
+		if (ledsEnabled)
+		{
+			digitalWrite(BOARD_LED, LOW); // turn LED ON
+		}
 		if (pirState == LOW) {
 			Serial.println("Motion detected!");
 			// We only want to print on the output change, not state
@@ -145,7 +169,10 @@ void askSensor() {
 		}
 	}
 	else {
-		digitalWrite(BOARD_LED, HIGH); // turn LED OFF
+		if (ledsEnabled)
+		{
+			digitalWrite(BOARD_LED, HIGH); // turn LED OFF
+		}
 		if (pirState == HIGH) {
 			// we have just turned of
 			Serial.println("Motion ended!");
@@ -157,23 +184,33 @@ void askSensor() {
 }
 
 void showSensorStatus() {
-	if (sensorStatus == 4) { //sensorEnabled && motionDetected
+	if (ledsEnabled)
+	{
+		if (sensorStatus == 4) { //sensorEnabled && motionDetected
+			digitalWrite(GREEN_LED, LOW);
+			digitalWrite(RED_LED, LOW);
+			digitalWrite(BLUE_LED, HIGH);
+			return;
+		}
+		if (sensorStatus == 2) {
+			digitalWrite(GREEN_LED, LOW);
+			digitalWrite(RED_LED, HIGH);
+			digitalWrite(BLUE_LED, LOW);
+			return;
+		}
+		if (!sensorEnabled) {
+			digitalWrite(GREEN_LED, HIGH);
+			digitalWrite(RED_LED, LOW);
+			digitalWrite(BLUE_LED, LOW);
+			return;
+		}
+	}
+	else
+	{
 		digitalWrite(GREEN_LED, LOW);
 		digitalWrite(RED_LED, LOW);
-		digitalWrite(BLUE_LED, HIGH);
-		return;
-	}
-	if (sensorStatus == 2) {
-		digitalWrite(GREEN_LED, LOW);
-		digitalWrite(RED_LED, HIGH);
 		digitalWrite(BLUE_LED, LOW);
-		return;
-	}
-	if (!sensorEnabled) {
-		digitalWrite(GREEN_LED, HIGH);
-		digitalWrite(RED_LED, LOW);
-		digitalWrite(BLUE_LED, LOW);
-		return;
+		digitalWrite(BOARD_LED, HIGH);
 	}
 }
 
@@ -201,21 +238,22 @@ void processSensorStatus() {
 }
 
 void publishSensorStatus(int status) {
-		//sensorStatus = status;
-		//char array[1];
-		//array[0] = char(status);
+	long now = millis();
 	if (sensorStatus != status) {//publishes status if it is changed
 		sensorStatus = status;
-		client.publish("WittyCloud2/status", String(status).c_str());
+		lastSensorMsg = now;
+		client.publish("WittyCloud2/sensorStatus", String(status).c_str());
+		Serial.println("---------------");
 		Serial.print("Publish status ");
-		Serial.print(status);
+		Serial.println(status);
+		Serial.println("---------------");
 	}
 	else
 	{
 		long now = millis();
-		if (now - lastSensorMsg > 300000) { //publishes status every 5 min even if it is not changed
+		if (now - lastSensorMsg > sensorStatusPeriod) { //publishes status every 5 min even if it is not changed
 			lastSensorMsg = now;
-			client.publish("WittyCloud2/status", String(status).c_str());
+			client.publish("WittyCloud2/sensorStatus", String(status).c_str());
 		}
 	}
 }
