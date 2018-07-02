@@ -1,32 +1,44 @@
 #include <PubSubClient.h>
 #include <ESP8266WiFi.h>
+#include "Credentials.h"
 
-// Update these with values suitable for your network.
-const char* ssid = "";
-const char* password = "";
-const char* mqtt_server = "192.168.0.112";
 
+const char* mqtt_server = MQTT_SERVER_IP;
+WiFiClient espClient;
+unsigned long reconnectionPeriod = 60000;
+unsigned long lastBrokerConnectionAttempt = 0;
+unsigned long lastWifiConnectionAttempt = 0;
+PubSubClient client(espClient);
+char msg[50];
+
+//Witty Cloud hardware
 const int GREEN_LED = 12;
 const int RED_LED = 15;
 const int BLUE_LED = 13;
 const int SENSOR_PIN = 14;
 const int LDR_PIN = 0;
 const int BOARD_LED = 2;
-
-WiFiClient espClient;
-PubSubClient client(espClient);
-long lastSensorRead = 0;
-long lastSensorMsg = 0;
-long lastLightMsg = 0;
-char msg[50];
 int LDRLevel = 0;
+int lightTreshold = 30;
+long lastLightSensorMsg = 0;
+unsigned long lightsOnTime = 0;
+int lightsOnPeriod = 300000;
+bool darkness = false;
+bool lightsOff = true;
+
+
+//PIR sensor 
 bool motionDetected = false; //0 - OK , 1 - Alarm
 bool sensorEnabled = false;
 bool ledsEnabled = true;
 byte pirState = LOW;             // we start, assuming no motion detected
 byte val = LOW;                  // variable for reading the pin status
 int sensorStatus = 0;
-int sensorStatusPeriod = 60000;
+long lastSensorMsg = 0;
+int publishSensorStatusPeriod = 60000;
+int pirSensorReadPeriod = 1000;
+long lastSensorRead = 0;
+
 
 void setup() {
 	pinMode(GREEN_LED, OUTPUT);
@@ -35,32 +47,76 @@ void setup() {
 	pinMode(BOARD_LED, OUTPUT);
 	pinMode(SENSOR_PIN, INPUT);
 	Serial.begin(115200);
-	setup_wifi();
+	WiFi.mode(WIFI_STA);
 	client.setServer(mqtt_server, 1883);
 	client.setCallback(callback);
+	setup_wifi();
 	delay(10000); //sensor calibration period
+}
+
+void connectToBroker() {
+	Serial.print("Attempting MQTT connection...");
+	// Attempt to connect
+	if (client.connect("WittyCloud_2")) {
+		Serial.println("connected");
+		// Once connected, publish an announcement...
+		client.publish("WittyCloud_2/status", "WittyCloud_2 connected");
+		client.publish("Weather/update", "1");
+		// ... and resubscribe
+		client.subscribe("WittyCloud2/motionSensor");
+		client.subscribe("WittyCloud2/leds");
+		client.subscribe("WittyCloud2/lightTreshold");
+		client.subscribe("WittyCloud2/lightsOnPeriod");
+	}
+	else {
+		Serial.print("failed, rc=");
+		Serial.print(client.state());
+		Serial.println(" try again in 1 minute");
+	}
 }
 
 
 void setup_wifi() {
 
-	delay(50);
+	delay(500);
 	// We start by connecting to a WiFi network
-	Serial.println();
-	Serial.print("Connecting to ");
-	Serial.println(ssid);
+	int numberOfNetworks = WiFi.scanNetworks();
 
-	WiFi.begin(ssid, password);
-
-	while (WiFi.status() != WL_CONNECTED) {
-		delay(500);
-		Serial.print(".");
+	for (int i = 0; i < numberOfNetworks; i++) {
+		Serial.print("Network name: ");
+		Serial.println(WiFi.SSID(i));
+		if (WiFi.SSID(i).equals(SSID_1))
+		{
+			Serial.print("Connecting to ");
+			Serial.println(SSID_1);
+			WiFi.begin(SSID_1, PASSWORD_1);
+			delay(1000);
+			connectToBroker();
+			return;
+		}
+		else if (WiFi.SSID(i).equals(SSID_2))
+		{
+			Serial.print("Connecting to ");
+			Serial.println(SSID_2);
+			WiFi.begin(SSID_2, PASSWORD_2);
+			delay(1000);
+			connectToBroker();
+			return;
+		}
+		else if (WiFi.SSID(i).equals(SSID_3))
+		{
+			Serial.print("Connecting to ");
+			Serial.println(SSID_3);
+			WiFi.begin(SSID_3, PASSWORD_3);
+			delay(1000);
+			connectToBroker();
+			return;
+		}
+		else
+		{
+			Serial.println("Can't connect to " + WiFi.SSID(i));
+		}
 	}
-
-	Serial.println("");
-	Serial.println("WiFi connected");
-	Serial.println("IP address: ");
-	Serial.println(WiFi.localIP());
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -91,55 +147,66 @@ void callback(char* topic, byte* payload, unsigned int length) {
 		}
 		return;
 	}
-	if (strcmp(topic, "WittyCloud2/setSensorStatusPeriod") == 0) {
+	if (strcmp(topic, "WittyCloud2/lightTreshold") == 0) {
 		String myString = String((char*)payload);
-		sensorStatusPeriod = myString.toInt();
-		Serial.println(sensorStatusPeriod);
-		client.publish("WittyCloud2/status", "SensorStatusPeriod set to " + sensorStatusPeriod);
+		lightTreshold = myString.toInt();
 		return;
 	}
 }
 
-void reconnect() {
-	// Loop until we're reconnected
-	while (!client.connected()) {
-		Serial.print("Attempting MQTT connection...");
-		// Attempt to connect
-		if (client.connect("WittyCloud2")) {
-			Serial.println("connected");
-			// Once connected, publish an announcement...
-			client.publish("WittyCloud2/status", "WittyCloud2 connected");
-			// ... and resubscribe
-			client.subscribe("WittyCloud2/motionSensor");
-			client.subscribe("WittyCloud2/leds");
-			client.subscribe("WittyCloud2/setSensorStatusPeriod");
-		}
-		else {
-			Serial.print("failed, rc=");
-			Serial.print(client.state());
-			Serial.println(" try again in 5 seconds");
-			// Wait 5 seconds before retrying
-			delay(5000);
+void reconnectWifi() {
+	long now = millis();
+	if (now - lastWifiConnectionAttempt > reconnectionPeriod) {
+		lastWifiConnectionAttempt = now;
+		setup_wifi();
+	}
+}
+
+void reconnectToBroker() {
+	long now = millis();
+	if (now - lastBrokerConnectionAttempt > reconnectionPeriod) {
+		lastBrokerConnectionAttempt = now;
+		{
+			if (WiFi.status() == WL_CONNECTED)
+			{
+				if (!client.connected()) {
+					connectToBroker();
+				}
+			}
+			else
+			{
+				reconnectWifi();
+			}
 		}
 	}
 }
 
+
 void loop() {
 	if (!client.connected()) {
-		reconnect();
+		reconnectToBroker();
 	}
 	client.loop();
-	askSensor();
-	processSensorStatus();
-	showSensorStatus();
+	askPirSensor();
+	processSensorAndPublishStatus();
 	sendLightSensorData();
+	turnLedsOff();
 }
 
 void sendLightSensorData() {
 	long now = millis();
-	if (now - lastLightMsg > 2000) {
-		lastLightMsg = now;
+	if (now - lastLightSensorMsg > 2000) {
+		lastLightSensorMsg = now;
 		int sensorRead = analogRead(0); // read the value from the sensor
+		if (sensorRead < lightTreshold)
+		{
+			darkness = true;
+		}
+		else 
+		{
+			darkness = false;
+		}
+
 		if (LDRLevel != sensorRead)
 		{
 			LDRLevel = sensorRead;
@@ -151,7 +218,7 @@ void sendLightSensorData() {
 }
 
 // about motion detection http://henrysbench.capnfatz.com/henrys-bench/arduino-sensors-and-input/arduino-hc-sr501-motion-sensor-tutorial/
-void askSensor() {
+void askPirSensor() {
 	val = digitalRead(SENSOR_PIN);
 	if (val == HIGH) {            // check if the input is HIGH
 		if (ledsEnabled)
@@ -183,40 +250,39 @@ void askSensor() {
 	}
 }
 
-void showSensorStatus() {
-	if (ledsEnabled)
+void turnLedsOn() {
+	if (ledsEnabled && darkness && lightsOff)
 	{
-		if (sensorStatus == 4) { //sensorEnabled && motionDetected
-			digitalWrite(GREEN_LED, LOW);
-			digitalWrite(RED_LED, LOW);
-			digitalWrite(BLUE_LED, HIGH);
-			return;
-		}
-		if (sensorStatus == 2) {
-			digitalWrite(GREEN_LED, LOW);
-			digitalWrite(RED_LED, HIGH);
-			digitalWrite(BLUE_LED, LOW);
-			return;
-		}
-		if (!sensorEnabled) {
-			digitalWrite(GREEN_LED, HIGH);
-			digitalWrite(RED_LED, LOW);
-			digitalWrite(BLUE_LED, LOW);
-			return;
-		}
-	}
-	else
-	{
-		digitalWrite(GREEN_LED, LOW);
-		digitalWrite(RED_LED, LOW);
-		digitalWrite(BLUE_LED, LOW);
-		digitalWrite(BOARD_LED, HIGH);
+		Serial.println("turnLedsOn");
+		fadeIn(GREEN_LED);
+		fadeIn(RED_LED);
+		fadeIn(BLUE_LED);
+		lightsOnTime = millis();
+		lightsOff = false;
+		return;
 	}
 }
 
-void processSensorStatus() {
+void turnLedsOff() {
+	if (!lightsOff)
+	{
+		long now = millis();
+		if (now - lightsOnTime > lightsOnPeriod) {
+			Serial.println("turnLedsOff");
+			analogWrite(GREEN_LED, 0); // turn LED OFF
+			delay(1000);
+			analogWrite(RED_LED, 0); // turn LED OFF
+			delay(1000);
+			analogWrite(BLUE_LED, 0); // turn LED OFF
+			delay(1000);
+			lightsOff = true;
+		}
+	}
+}
+
+void processSensorAndPublishStatus() {
 	long now = millis();
-	if (now - lastSensorRead > 1000) {
+	if (now - lastSensorRead > pirSensorReadPeriod) {
 		lastSensorRead = now;
 		if (sensorEnabled && motionDetected) {
 			publishSensorStatus(4);
@@ -228,6 +294,7 @@ void processSensorStatus() {
 		}
 		if (!sensorEnabled && motionDetected) {
 			publishSensorStatus(3);
+			turnLedsOn();
 			return;
 		}
 		if (!sensorEnabled && !motionDetected) {
@@ -251,9 +318,17 @@ void publishSensorStatus(int status) {
 	else
 	{
 		long now = millis();
-		if (now - lastSensorMsg > sensorStatusPeriod) { //publishes status every 5 min even if it is not changed
+		if (now - lastSensorMsg > publishSensorStatusPeriod) { //publishes status every 5 min even if it is not changed
 			lastSensorMsg = now;
 			client.publish("WittyCloud2/sensorStatus", String(status).c_str());
 		}
+	}
+}
+
+void fadeIn(int ledPin) {
+	for (int i = 0; i < 255; i++)
+	{
+		analogWrite(ledPin, i);
+		delay(30);
 	}
 }
